@@ -1,0 +1,41 @@
+#Fix PSADT packages
+ $PackagePath = 'C:\PSADT-PrusaSlicer'
+$tempfolder = "c:\temp"
+ 
+#Convert .cs file to .dll using csc.exe
+$PSADT_CSfile = Get-ChildItem -Path "$PackagePath\AppDeployToolkit" -Filter '*.cs'
+Copy-Item -Path $($PSADT_CSfile.fullname) -Destination $tempfolder -Force start-process -FilePath "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" -ArgumentList "/target:library /out:$tempfolder\AppDeployToolkitMain.dll $tempfolder\$($PSADT_CSfile.name)" -Wait -WorkingDirectory "$PackagePath\AppDeployToolkit"
+Move-Item -Path "$tempfolder\AppDeployToolkitMain.dll" -Destination "$PackagePath\AppDeployToolkit" -Force Remove-Item $tempfolder\$($PSADT_CSfile.name) -Force
+ 
+#replace the reference to appdeploytoolkitmain.cs with appdeploytoolkitmain.dll in appdeploytoolkitmain.ps1 $psadtmain = Get-Content -Path "$PackagePath\AppDeployToolkit\AppDeployToolkitMain.ps1"
+$psadtmain = $psadtmain -replace "AppDeployToolkitMain.cs", "AppDeployToolkitMain.dll"
+Set-Content -Path "$PackagePath\AppDeployToolkit\AppDeployToolkitMain.ps1" -Value $psadtmain -Encoding utf8 -Force 
+
+# Create packaged app policy
+Get-AppxPackage | Out-GridView -PassThru | %{$Rules += New-CIPolicyRule -Package $_}
+New-CIPolicy -Rules $rules -FilePath .\packagedapppolicy.xml -MultiplePolicyFormat -UserPEs
+Set-CIPolicyIdInfo -BasePolicyToSupplementPath "basepolicy.xml" -FilePath .\packagedapppolicy.xml 
+
+# Learn how to codesign
+Create your own cert without a PKI 
+New-SelfSignedCertificate -Type CodeSigningCert -Subject 'Application control signing cert' -CertStoreLocation Cert:\CurrentUser\my 
+ #!!! Add cert to Trusted Store !!!
+Sign a file using that cert 
+Set-AuthenticodeSignature -Certificate $(gci Cert:\CurrentUser\My -CodeSigningCert |? {$_.Subject -like 'CN=Application control signing cert'}) -TimestampServer http://timestamp.digicert.com -HashAlgorithm sha256 -FilePath "file"  
+
+
+#Setup vscode auto code sign
+cmd.exe /c "code.cmd --install-extension wk-j.save-and-run 2> NUL"
+$settingsPath = "$env:APPDATA\Code\User\settings.json";
+$data  = Get-Content -Raw -Path $settingsPath -ErrorAction silentlycontinue | ConvertFrom-Json
+ 
+$list = New-Object System.Collections.ArrayList
+$list.Add(@{"match"=".ps[dm]{0,1}1$|.vbs$";"cmd"="set-authenticodesignature -Certificate  `$(gci Cert:\CurrentUser\My -CodeSigningCert | Sort-Object -Property NotAfter -Descending | Select-Object -First 1) -timestampserver http://timestamp.digicert.com -filepath '`${file}'";"useShortcut"="false";"silent"="false"})
+$list.add(@{"match"=".ps[dm]{0,1}1$|.vbs$";"cmd"="set-authenticodesignature -Certificate  `$(gci Cert:\CurrentUser\My -CodeSigningCert | Sort-Object -Property NotAfter -Descending | Select-Object -First 1) -timestampserver http://timestamp.digicert.com -filepath '`${file}'";"useShortcut"="true";"silent"="false"})
+ 
+$commands = @{"commands"=$list;}
+ 
+if ($data)
+{$data | Add-Member -MemberType NoteProperty -Name "saveAndRun" -Value $commands -Force}
+$data | ConvertTo-Json -depth 5  | Out-file $settingsPath -Encoding utf8
+
